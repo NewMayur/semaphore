@@ -35,6 +35,9 @@ func (m *mockAccessKeyRepo) GetTaskAccessKey(int, int) (db.AccessKey, error) {
 }
 func (m *mockAccessKeyRepo) DeleteTaskAccessKeys(int, int) error { return nil }
 func (m *mockAccessKeyRepo) DeleteExpiredTaskAccessKeys() error  { return nil }
+func (m *mockAccessKeyRepo) GetAccessKeysBySourceStorageType(db.AccessKeySourceStorageType) ([]db.AccessKey, error) {
+	return nil, nil
+}
 
 type mockAccessKeyService struct {
 	deleted []int

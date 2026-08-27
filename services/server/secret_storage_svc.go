@@ -1,8 +1,6 @@
 package server
 
 import (
-	"errors"
-
 	"github.com/semaphoreui/semaphore/db"
 	"github.com/semaphoreui/semaphore/pkg/common_errors"
 	"github.com/semaphoreui/semaphore/pkg/random"
@@ -91,6 +89,79 @@ func (s *SecretStorageServiceImpl) GetSecretStorage(projectID int, storageID int
 	return s.secretStorageRepo.GetSecretStorage(projectID, storageID)
 }
 
+// resolveSourceStorageKey validates the reference a secret storage uses to locate
+// its vault token and returns it in canonical form.
+//
+// AccessKeyService enforces the same rule when the key is written, and that is what
+// actually guarantees it. Checking here as well keeps the storage row from being
+// created only to be rolled back, and reports the rejection against the field the
+// user filled in.
+func (s *SecretStorageServiceImpl) resolveSourceStorageKey(
+	sourceStorageType db.AccessKeySourceStorageType,
+	secret string,
+	projectID int,
+) (canonicalKey string, err error) {
+	canonicalKey, err = db.ValidateSourceStorageKey(sourceStorageType, secret)
+	if err != nil {
+		return "", err
+	}
+
+	if err = s.checkSourceStorageKeyUnclaimed(sourceStorageType, canonicalKey, projectID); err != nil {
+		return "", err
+	}
+
+	return canonicalKey, nil
+}
+
+// checkSourceStorageKeyUnclaimed fails when a project other than projectID already
+// takes its vault token from the same file or environment variable.
+func (s *SecretStorageServiceImpl) checkSourceStorageKeyUnclaimed(
+	sourceStorageType db.AccessKeySourceStorageType,
+	canonicalKey string,
+	projectID int,
+) error {
+	keys, err := s.accessKeyRepo.GetAccessKeysBySourceStorageType(sourceStorageType)
+	if err != nil {
+		return err
+	}
+
+	if db.FindConflictingSourceStorageKey(keys, sourceStorageType, canonicalKey, &projectID, 0) != nil {
+		return db.ErrSourceStorageKeyClaimed
+	}
+
+	return nil
+}
+
+// confirmSourceStorageKeyClaim re-runs the cross-project check once the access key
+// has been written. The check and the write are not atomic, so a request in another
+// project — including one on another node of an HA cluster — can claim the same
+// token in between. When that happened, rollback undoes this write; both racers
+// backing out is the safe outcome, and the operator simply retries.
+func (s *SecretStorageServiceImpl) confirmSourceStorageKeyClaim(
+	sourceStorageType *db.AccessKeySourceStorageType,
+	canonicalKey string,
+	projectID int,
+	rollback func() error,
+) error {
+	if sourceStorageType == nil || canonicalKey == "" {
+		return nil
+	}
+
+	conflictErr := s.checkSourceStorageKeyUnclaimed(*sourceStorageType, canonicalKey, projectID)
+	if conflictErr == nil {
+		return nil
+	}
+
+	if rollbackErr := rollback(); rollbackErr != nil {
+		// The claim could not be withdrawn, so report that instead of the conflict:
+		// the storage is left pointing at another project's token and the failure
+		// needs an operator, not a retry.
+		return rollbackErr
+	}
+
+	return conflictErr
+}
+
 func (s *SecretStorageServiceImpl) Create(storage db.SecretStorage) (res db.SecretStorage, err error) {
 	sourceStorageType := storage.SourceStorageType
 	sourceStorageKey := ""
@@ -101,13 +172,8 @@ func (s *SecretStorageServiceImpl) Create(storage db.SecretStorage) (res db.Secr
 	}
 
 	if sourceStorageType != nil {
-		switch *sourceStorageType {
-		case db.AccessKeySourceStorageEnv:
-			sourceStorageKey = storage.Secret
-		case db.AccessKeySourceStorageFile:
-			sourceStorageKey = storage.Secret
-		default:
-			err = common_errors.NewUserErrorS("unsupported source storage type")
+		sourceStorageKey, err = s.resolveSourceStorageKey(*sourceStorageType, storage.Secret, storage.ProjectID)
+		if err != nil {
 			return
 		}
 	}
@@ -133,17 +199,18 @@ func (s *SecretStorageServiceImpl) Create(storage db.SecretStorage) (res db.Secr
 		key.String = storage.Secret
 	}
 
-	_, err = s.accessKeyService.Create(key)
+	if _, err = s.accessKeyService.Create(key); err != nil {
+		return
+	}
+
+	err = s.confirmSourceStorageKeyClaim(sourceStorageType, sourceStorageKey, storage.ProjectID, func() error {
+		return s.Delete(storage.ProjectID, res.ID)
+	})
 
 	return
 }
 
 func (s *SecretStorageServiceImpl) Update(storage db.SecretStorage) (err error) {
-	err = s.secretStorageRepo.UpdateSecretStorage(storage)
-	if err != nil {
-		return
-	}
-
 	keys, err := s.accessKeyService.GetAll(storage.ProjectID, db.GetAccessKeyOptions{
 		Owner:     db.AccessKeySecretStorage,
 		StorageID: &storage.ID,
@@ -153,26 +220,31 @@ func (s *SecretStorageServiceImpl) Update(storage db.SecretStorage) (err error) 
 		return
 	}
 
-	if len(keys) == 0 {
-		if storage.Secret == "" {
-			// empty vault token means the user didn't set a new token,
-			// so we don't create a new access key.
+	sourceStorageType := storage.SourceStorageType
+	sourceStorageKey := ""
+
+	// Validated before anything is written: an existing storage must not be able to
+	// be re-pointed at a token belonging to another project, and a rejected update
+	// must leave the storage row exactly as it was.
+	if sourceStorageType != nil && storage.Secret != "" {
+		sourceStorageKey, err = s.resolveSourceStorageKey(*sourceStorageType, storage.Secret, storage.ProjectID)
+		if err != nil {
 			return
 		}
+	}
 
-		sourceStorageType := storage.SourceStorageType
-		sourceStorageKey := ""
+	err = s.secretStorageRepo.UpdateSecretStorage(storage)
+	if err != nil {
+		return
+	}
 
-		if sourceStorageType != nil {
-			switch *sourceStorageType {
-			case db.AccessKeySourceStorageEnv, db.AccessKeySourceStorageFile:
-				sourceStorageKey = storage.Secret
-			default:
-				err = errors.New("unsupported source storage type")
-				return
-			}
-		}
+	if storage.Secret == "" {
+		// An empty vault token means the user didn't set a new one, so the existing
+		// access key — if there is one — keeps the token it already holds.
+		return
+	}
 
+	if len(keys) == 0 {
 		newKey := db.AccessKey{
 			Name:              random.String(10),
 			Type:              db.AccessKeyString,
@@ -188,45 +260,45 @@ func (s *SecretStorageServiceImpl) Update(storage db.SecretStorage) (err error) 
 			newKey.String = storage.Secret
 		}
 
-		_, err = s.accessKeyService.Create(newKey)
-
-	} else {
-		vault := keys[0]
-		if storage.Secret == "" {
-			// Do nothing if the vault token is empty,
-			// as it means the user haven't set a new token.
-
-			//err = s.keyRepo.DeleteAccessKey(storage.ProjectID, vault.ID)
+		var created db.AccessKey
+		created, err = s.accessKeyService.Create(newKey)
+		if err != nil {
 			return
 		}
 
-		sourceStorageType := storage.SourceStorageType
-		sourceStorageKey := ""
+		err = s.confirmSourceStorageKeyClaim(sourceStorageType, sourceStorageKey, storage.ProjectID, func() error {
+			return s.accessKeyService.Delete(storage.ProjectID, created.ID)
+		})
 
-		if sourceStorageType != nil {
-			switch *sourceStorageType {
-			case db.AccessKeySourceStorageEnv, db.AccessKeySourceStorageFile:
-				sourceStorageKey = storage.Secret
-			default:
-				err = errors.New("unsupported source storage type")
-				return
-			}
-		}
-
-		vault.OverrideSecret = true
-		vault.SourceStorageType = sourceStorageType
-		if sourceStorageKey != "" {
-			vault.SourceStorageKey = &sourceStorageKey
-			vault.String = ""
-			// Clear previously persisted encrypted secret when switching to env/file source.
-			vault.Secret = nil
-		} else {
-			vault.SourceStorageKey = nil
-			vault.String = storage.Secret
-		}
-
-		err = s.accessKeyService.Update(vault)
+		return
 	}
+
+	vault := keys[0]
+
+	vault.OverrideSecret = true
+	vault.SourceStorageType = sourceStorageType
+	if sourceStorageKey != "" {
+		vault.SourceStorageKey = &sourceStorageKey
+		vault.String = ""
+		// Clear previously persisted encrypted secret when switching to env/file source.
+		vault.Secret = nil
+	} else {
+		vault.SourceStorageKey = nil
+		vault.String = storage.Secret
+	}
+
+	if err = s.accessKeyService.Update(vault); err != nil {
+		return
+	}
+
+	err = s.confirmSourceStorageKeyClaim(sourceStorageType, sourceStorageKey, storage.ProjectID, func() error {
+		// Written back through the repository rather than the service so the row is
+		// restored exactly as it was read: the service would re-encrypt from a
+		// plaintext this copy no longer carries and lose the stored ciphertext.
+		previous := keys[0]
+		previous.OverrideSecret = true
+		return s.accessKeyRepo.UpdateAccessKey(previous)
+	})
 
 	return
 }
