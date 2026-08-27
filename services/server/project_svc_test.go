@@ -95,6 +95,9 @@ func (m *mockAccessKeyManager) GetTaskAccessKey(projectID int, taskID int) (db.A
 }
 func (m *mockAccessKeyManager) DeleteTaskAccessKeys(projectID int, taskID int) error { return nil }
 func (m *mockAccessKeyManager) DeleteExpiredTaskAccessKeys() error                   { return nil }
+func (m *mockAccessKeyManager) GetAccessKeysBySourceStorageType(db.AccessKeySourceStorageType) ([]db.AccessKey, error) {
+	return nil, nil
+}
 
 func TestProjectServiceImpl_DeleteProject(t *testing.T) {
 	mockRepo := &mockProjectStore{

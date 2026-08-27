@@ -63,6 +63,21 @@ func (d *SqlDb) GetAccessKeys(projectID int, options db.GetAccessKeyOptions, par
 	return
 }
 
+func (d *SqlDb) GetAccessKeysBySourceStorageType(sourceStorageType db.AccessKeySourceStorageType) (keys []db.AccessKey, err error) {
+	keys = make([]db.AccessKey, 0)
+
+	_, err = d.selectAll(&keys,
+		"select * from access_key "+
+			"where source_storage_type=? and source_storage_key is not null",
+		sourceStorageType)
+
+	for i := range keys {
+		keys[i].Empty = keys[i].IsEmpty()
+	}
+
+	return
+}
+
 func (d *SqlDb) UpdateAccessKey(key db.AccessKey) error {
 	err := key.Validate(key.OverrideSecret)
 

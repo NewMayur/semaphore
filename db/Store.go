@@ -382,6 +382,12 @@ type AccessKeyManager interface {
 	// whose expire_at is in the past, across all projects. Idempotent, safe to
 	// run concurrently on several HA nodes.
 	DeleteExpiredTaskAccessKeys() error
+	// GetAccessKeysBySourceStorageType returns the keys of every project that read
+	// their value from the given source (a file or an environment variable).
+	// Deliberately not scoped to a project or an owner: it exists to detect that a
+	// source is already claimed by a different project, and a key of any owner
+	// pointed at another project's token file leaks it just the same.
+	GetAccessKeysBySourceStorageType(sourceStorageType AccessKeySourceStorageType) ([]AccessKey, error)
 }
 
 // IntegrationManager handles integration-related operations

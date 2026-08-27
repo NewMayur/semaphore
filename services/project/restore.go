@@ -136,6 +136,39 @@ func (e BackupAccessKey) Verify(backup *BackupFormat) error {
 	return verifyDuplicate[BackupAccessKey](e.Name, backup.Keys)
 }
 
+// validateRestoredSourceStorageKey canonicalizes the file or environment variable a
+// restored key reads from, and refuses it when a project other than the one being
+// restored into already reads from the same place.
+func validateRestoredSourceStorageKey(b *BackupDB, key *db.AccessKey) error {
+	if key.SourceStorageType == nil || key.SourceStorageKey == nil {
+		return nil
+	}
+
+	if !db.IsExternalSourceStorageType(*key.SourceStorageType) {
+		return nil
+	}
+
+	canonical, err := db.ValidateSourceStorageKey(*key.SourceStorageType, *key.SourceStorageKey)
+	if err != nil {
+		return err
+	}
+
+	existing, err := b.store.GetAccessKeysBySourceStorageType(*key.SourceStorageType)
+	if err != nil {
+		return err
+	}
+
+	// The key has not been created yet, so there is no row of its own to exclude.
+	if db.FindConflictingSourceStorageKey(
+		existing, *key.SourceStorageType, canonical, key.ProjectID, 0) != nil {
+		return db.ErrSourceStorageKeyClaimed
+	}
+
+	key.SourceStorageKey = &canonical
+
+	return nil
+}
+
 func (e BackupAccessKey) Restore(b *BackupDB) error {
 
 	key := e.AccessKey
@@ -155,6 +188,14 @@ func (e BackupAccessKey) Restore(b *BackupDB) error {
 			return fmt.Errorf("secret storage does not exist in secret_storage[].name")
 		}
 		key.SourceStorageID = &sourceStorage.ID
+	}
+
+	// A backup carries source_storage_key verbatim, and restore writes straight to
+	// the store rather than through AccessKeyService, so the cross-project rule that
+	// service enforces has to be applied here too. Without it a crafted backup
+	// restores into a fresh project that reads another project's vault token file.
+	if err := validateRestoredSourceStorageKey(b, &key); err != nil {
+		return err
 	}
 
 	newKey, err := b.store.CreateAccessKey(key)

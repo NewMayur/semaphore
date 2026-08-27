@@ -69,7 +69,52 @@ func (s *AccessKeyServiceImpl) GetAll(projectID int, options db.GetAccessKeyOpti
 	return s.accessKeyRepo.GetAccessKeys(projectID, options, params)
 }
 
+// claimSourceStorageKey canonicalizes the external source a key reads its value from
+// and refuses it when another project already reads from the same place.
+//
+// A file path or an environment variable name is not scoped to a project: every key
+// naming it reads the same bytes. Letting a second project name a source a first one
+// already uses hands it that project's secret — and for a secret storage token, every
+// secret that token unlocks. This is the choke point for that rule, so it holds for
+// the secret storage service, the project key endpoints and environment secrets
+// alike; validating in any one caller would leave the others open.
+//
+// The canonical form is written back into key so that the row persisted downstream
+// cannot be matched by spelling the same path differently later.
+func (s *AccessKeyServiceImpl) claimSourceStorageKey(key *db.AccessKey) error {
+	if key.SourceStorageType == nil || key.SourceStorageKey == nil {
+		return nil
+	}
+
+	if !db.IsExternalSourceStorageType(*key.SourceStorageType) {
+		return nil
+	}
+
+	canonical, err := db.ValidateSourceStorageKey(*key.SourceStorageType, *key.SourceStorageKey)
+	if err != nil {
+		return err
+	}
+
+	existing, err := s.accessKeyRepo.GetAccessKeysBySourceStorageType(*key.SourceStorageType)
+	if err != nil {
+		return err
+	}
+
+	if db.FindConflictingSourceStorageKey(
+		existing, *key.SourceStorageType, canonical, key.ProjectID, key.ID) != nil {
+		return db.ErrSourceStorageKeyClaimed
+	}
+
+	key.SourceStorageKey = &canonical
+
+	return nil
+}
+
 func (s *AccessKeyServiceImpl) Create(key db.AccessKey) (newKey db.AccessKey, err error) {
+
+	if err = s.claimSourceStorageKey(&key); err != nil {
+		return
+	}
 
 	// SerializeSecret encrypts/persists the secret for writable backends. For read-only
 	// external storage the secret is not stored in Semaphore, so SerializeSecret fails
@@ -85,7 +130,13 @@ func (s *AccessKeyServiceImpl) Create(key db.AccessKey) (newKey db.AccessKey, er
 
 func (s *AccessKeyServiceImpl) Update(key db.AccessKey) (err error) {
 	if !key.OverrideSecret {
+		// UpdateAccessKey writes the source storage columns only when the secret is
+		// overridden, so there is no new claim to validate on this path.
 		err = s.accessKeyRepo.UpdateAccessKey(key)
+		return
+	}
+
+	if err = s.claimSourceStorageKey(&key); err != nil {
 		return
 	}
 
