@@ -31,6 +31,7 @@ func TestGetEnvironmentVars(t *testing.T) {
 		ForwardedEnvVars: []string{"SEMAPHORE_TEST"},
 		EnvVars: map[string]string{
 			"ANSIBLE_FORCE_COLOR": "False",
+			"HTTP_PROXY":          "http://override.proxy:9090",
 		},
 	}
 
@@ -40,7 +41,7 @@ func TestGetEnvironmentVars(t *testing.T) {
 		"SEMAPHORE_TEST=test123",
 		"ANSIBLE_FORCE_COLOR=False",
 		"PATH=",
-		"HTTP_PROXY=http://proxy.corp:8080",
+		"HTTP_PROXY=http://override.proxy:9090",
 		"NO_PROXY=localhost,.domain.com",
 		"SSL_CERT_FILE=/etc/ssl/certs/custom-ca.pem",
 	}
@@ -49,6 +50,22 @@ func TestGetEnvironmentVars(t *testing.T) {
 		if !contains(res, e) {
 			t.Errorf("Expected result to contain %v, but got %v", e, res)
 		}
+	}
+
+	// Ambient value must be overridden, not duplicated
+	if contains(res, "HTTP_PROXY=http://proxy.corp:8080") {
+		t.Errorf("HTTP_PROXY should have been overridden by Config.EnvVars, but found ambient value in %v", res)
+	}
+
+	// Verify no duplicate keys exist
+	seenKeys := make(map[string]bool)
+	for _, envStr := range res {
+		parts := strings.SplitN(envStr, "=", 2)
+		key := parts[0]
+		if seenKeys[key] {
+			t.Errorf("Duplicate environment variable key found: %s", key)
+		}
+		seenKeys[key] = true
 	}
 
 	// Unforwarded variables must not be leaked

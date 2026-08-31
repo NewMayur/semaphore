@@ -48,25 +48,28 @@ var defaultForwardedEnvVars = []string{
 }
 
 func getEnvironmentVars() []string {
-	res := []string{
-		fmt.Sprintf("PATH=%s", os.Getenv("PATH")),
-	}
+	envMap := make(map[string]string)
+
+	envMap["PATH"] = os.Getenv("PATH")
 
 	for _, e := range defaultForwardedEnvVars {
-		v := os.Getenv(e)
-		if v != "" {
-			res = append(res, fmt.Sprintf("%s=%s", e, v))
+		if v := os.Getenv(e); v != "" {
+			envMap[e] = v
 		}
 	}
 
 	for _, e := range util.Config.ForwardedEnvVars {
-		v := os.Getenv(e)
-		if v != "" {
-			res = append(res, fmt.Sprintf("%s=%s", e, v))
+		if v := os.Getenv(e); v != "" {
+			envMap[e] = v
 		}
 	}
 
 	for k, v := range util.Config.EnvVars {
+		envMap[k] = v
+	}
+
+	res := make([]string, 0, len(envMap))
+	for k, v := range envMap {
 		res = append(res, fmt.Sprintf("%s=%s", k, v))
 	}
 
