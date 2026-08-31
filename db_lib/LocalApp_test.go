@@ -20,33 +20,60 @@ func contains(slice []string, item string) bool {
 }
 
 func TestGetEnvironmentVars(t *testing.T) {
-	os.Setenv("SEMAPHORE_TEST", "test123")  //nolint:errcheck
-	os.Setenv("SEMAPHORE_TEST2", "test222") //nolint:errcheck
-	os.Setenv("PASSWORD", "test222")        //nolint:errcheck
+	t.Setenv("SEMAPHORE_TEST", "test123")
+	t.Setenv("SEMAPHORE_TEST2", "test222")
+	t.Setenv("PASSWORD", "test222")
+	t.Setenv("HTTP_PROXY", "http://proxy.corp:8080")
+	t.Setenv("NO_PROXY", "localhost,.domain.com")
+	t.Setenv("SSL_CERT_FILE", "/etc/ssl/certs/custom-ca.pem")
 
 	util.Config = &util.ConfigType{
 		ForwardedEnvVars: []string{"SEMAPHORE_TEST"},
 		EnvVars: map[string]string{
 			"ANSIBLE_FORCE_COLOR": "False",
+			"HTTP_PROXY":          "http://override.proxy:9090",
 		},
 	}
 
 	res := getEnvironmentVars()
 
-	expected := []string{
+	expectedSubstrings := []string{
 		"SEMAPHORE_TEST=test123",
 		"ANSIBLE_FORCE_COLOR=False",
 		"PATH=",
+		"HTTP_PROXY=http://override.proxy:9090",
+		"NO_PROXY=localhost,.domain.com",
+		"SSL_CERT_FILE=/etc/ssl/certs/custom-ca.pem",
 	}
 
-	if len(res) != len(expected) {
-		t.Errorf("Expected %v, got %v", expected, res)
-	}
-
-	for _, e := range expected {
+	for _, e := range expectedSubstrings {
 		if !contains(res, e) {
-			t.Errorf("Expected %v, got %v", expected, res)
+			t.Errorf("Expected result to contain %v, but got %v", e, res)
 		}
+	}
+
+	// Ambient value must be overridden, not duplicated
+	if contains(res, "HTTP_PROXY=http://proxy.corp:8080") {
+		t.Errorf("HTTP_PROXY should have been overridden by Config.EnvVars, but found ambient value in %v", res)
+	}
+
+	// Verify no duplicate keys exist
+	seenKeys := make(map[string]bool)
+	for _, envStr := range res {
+		parts := strings.SplitN(envStr, "=", 2)
+		key := parts[0]
+		if seenKeys[key] {
+			t.Errorf("Duplicate environment variable key found: %s", key)
+		}
+		seenKeys[key] = true
+	}
+
+	// Unforwarded variables must not be leaked
+	if contains(res, "PASSWORD=") {
+		t.Errorf("PASSWORD should not be in environment variables, got %v", res)
+	}
+	if contains(res, "SEMAPHORE_TEST2=") {
+		t.Errorf("SEMAPHORE_TEST2 should not be in environment variables without being in ForwardedEnvVars, got %v", res)
 	}
 }
 

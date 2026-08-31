@@ -44,31 +44,73 @@ func TestRepository_ClearCache(t *testing.T) {
 func TestRepository_GetGitURL(t *testing.T) {
 	for _, v := range []struct {
 		Repository     Repository
+		Secure         bool
 		ExpectedGitUrl string
 	}{
 		{
-			Repository: Repository{GitURL: "https://github.com/user/project.git", SSHKey: AccessKey{
-				Type: AccessKeyLoginPassword,
-				LoginPassword: LoginPassword{
-					Login:    "login",
-					Password: "password",
+			Repository: Repository{
+				GitURL: "https://github.com/user/project.git",
+				SSHKey: AccessKey{
+					Type: AccessKeyLoginPassword,
+					LoginPassword: LoginPassword{
+						Login:    "login",
+						Password: "password",
+					},
 				},
 			},
-			},
+			Secure:         false,
 			ExpectedGitUrl: "https://login:password@github.com/user/project.git",
 		},
 		{
-			Repository: Repository{GitURL: "https://github.com/user/project.git", SSHKey: AccessKey{
-				Type: AccessKeyLoginPassword,
-				LoginPassword: LoginPassword{
-					Password: "password",
+			Repository: Repository{
+				GitURL: "https://github.com/user/project.git",
+				SSHKey: AccessKey{
+					Type: AccessKeyLoginPassword,
+					LoginPassword: LoginPassword{
+						Password: "password",
+					},
 				},
 			},
-			},
+			Secure:         false,
 			ExpectedGitUrl: "https://password@github.com/user/project.git",
 		},
+		{
+			Repository: Repository{
+				GitURL: "https://devops.domain.com/tfs/project/_git/repo",
+				SSHKey: AccessKey{
+					Type: AccessKeyLoginPassword,
+					LoginPassword: LoginPassword{
+						Login:    "user@domain.com",
+						Password: "pass#word@123",
+					},
+				},
+			},
+			Secure:         false,
+			ExpectedGitUrl: "https://user%40domain.com:pass%23word%40123@devops.domain.com/tfs/project/_git/repo",
+		},
+		{
+			Repository: Repository{
+				GitURL: "https://devops.domain.com/tfs/project/_git/repo",
+				SSHKey: AccessKey{
+					Type: AccessKeyLoginPassword,
+					LoginPassword: LoginPassword{
+						Login:    "user@domain.com",
+						Password: "pass#word@123",
+					},
+				},
+			},
+			Secure:         true,
+			ExpectedGitUrl: "https://devops.domain.com/tfs/project/_git/repo",
+		},
+		{
+			Repository: Repository{
+				GitURL: "https://user:secret@devops.domain.com/tfs/project/_git/repo",
+			},
+			Secure:         true,
+			ExpectedGitUrl: "https://devops.domain.com/tfs/project/_git/repo",
+		},
 	} {
-		gitUrl := v.Repository.GetGitURL(false)
+		gitUrl := v.Repository.GetGitURL(v.Secure)
 		assert.Equal(t, v.ExpectedGitUrl, gitUrl, "wrong gitUrl")
 	}
 }

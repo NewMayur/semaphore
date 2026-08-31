@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/semaphoreui/semaphore/pkg/ssh"
@@ -27,6 +28,17 @@ func (c CmdGitClient) makeCmd(
 	cmd := exec.Command("git") //nolint: gas
 
 	cmd.Env = append(getEnvironmentVars(), installation.GetGitEnv()...)
+	homeDir := getHomeDir(r.Repository, r.TemplateID)
+	if homeDir != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("HOME=%s", homeDir))
+	} else if h := os.Getenv("HOME"); h != "" {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("HOME=%s", h))
+	}
+	if runtime.GOOS == "windows" {
+		if up := os.Getenv("USERPROFILE"); up != "" {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("USERPROFILE=%s", up))
+		}
+	}
 
 	switch targetDir {
 	case GitRepositoryTmpPath:
