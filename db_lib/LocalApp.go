@@ -23,9 +23,40 @@ func getHomeDir(repo db.Repository, templateID int) string {
 	}
 }
 
+var defaultForwardedEnvVars = []string{
+	// Proxy
+	"HTTP_PROXY", "http_proxy",
+	"HTTPS_PROXY", "https_proxy",
+	"NO_PROXY", "no_proxy",
+	"ALL_PROXY", "all_proxy",
+	"FTP_PROXY", "ftp_proxy",
+	// SSL / TLS certificates
+	"SSL_CERT_FILE", "SSL_CERT_DIR",
+	"CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+	"GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_SSL_NO_VERIFY",
+	// System / User / Locale
+	"USER", "LOGNAME", "USERNAME",
+	"LANG", "LC_ALL", "LC_CTYPE",
+	"TZ",
+	"TMPDIR", "TEMP", "TMP",
+	// Windows system vars
+	"SYSTEMROOT", "SystemRoot",
+	"WINDIR", "windir",
+	"APPDATA", "LOCALAPPDATA",
+	"COMSPEC", "ComSpec",
+	"PATHEXT",
+}
+
 func getEnvironmentVars() []string {
 	res := []string{
 		fmt.Sprintf("PATH=%s", os.Getenv("PATH")),
+	}
+
+	for _, e := range defaultForwardedEnvVars {
+		v := os.Getenv(e)
+		if v != "" {
+			res = append(res, fmt.Sprintf("%s=%s", e, v))
+		}
 	}
 
 	for _, e := range util.Config.ForwardedEnvVars {

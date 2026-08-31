@@ -20,9 +20,12 @@ func contains(slice []string, item string) bool {
 }
 
 func TestGetEnvironmentVars(t *testing.T) {
-	os.Setenv("SEMAPHORE_TEST", "test123")  //nolint:errcheck
-	os.Setenv("SEMAPHORE_TEST2", "test222") //nolint:errcheck
-	os.Setenv("PASSWORD", "test222")        //nolint:errcheck
+	t.Setenv("SEMAPHORE_TEST", "test123")
+	t.Setenv("SEMAPHORE_TEST2", "test222")
+	t.Setenv("PASSWORD", "test222")
+	t.Setenv("HTTP_PROXY", "http://proxy.corp:8080")
+	t.Setenv("NO_PROXY", "localhost,.domain.com")
+	t.Setenv("SSL_CERT_FILE", "/etc/ssl/certs/custom-ca.pem")
 
 	util.Config = &util.ConfigType{
 		ForwardedEnvVars: []string{"SEMAPHORE_TEST"},
@@ -33,20 +36,27 @@ func TestGetEnvironmentVars(t *testing.T) {
 
 	res := getEnvironmentVars()
 
-	expected := []string{
+	expectedSubstrings := []string{
 		"SEMAPHORE_TEST=test123",
 		"ANSIBLE_FORCE_COLOR=False",
 		"PATH=",
+		"HTTP_PROXY=http://proxy.corp:8080",
+		"NO_PROXY=localhost,.domain.com",
+		"SSL_CERT_FILE=/etc/ssl/certs/custom-ca.pem",
 	}
 
-	if len(res) != len(expected) {
-		t.Errorf("Expected %v, got %v", expected, res)
-	}
-
-	for _, e := range expected {
+	for _, e := range expectedSubstrings {
 		if !contains(res, e) {
-			t.Errorf("Expected %v, got %v", expected, res)
+			t.Errorf("Expected result to contain %v, but got %v", e, res)
 		}
+	}
+
+	// Unforwarded variables must not be leaked
+	if contains(res, "PASSWORD=") {
+		t.Errorf("PASSWORD should not be in environment variables, got %v", res)
+	}
+	if contains(res, "SEMAPHORE_TEST2=") {
+		t.Errorf("SEMAPHORE_TEST2 should not be in environment variables without being in ForwardedEnvVars, got %v", res)
 	}
 }
 
