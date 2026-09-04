@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/semaphoreui/semaphore/pkg/tz"
 
 	"github.com/semaphoreui/semaphore/api/sockets"
+	"github.com/semaphoreui/semaphore/pkg/git"
 	"github.com/semaphoreui/semaphore/pkg/task_logger"
 	"github.com/semaphoreui/semaphore/util"
 	log "github.com/sirupsen/logrus"
@@ -25,6 +27,7 @@ func (t *TaskRunner) Logf(format string, a ...any) {
 }
 
 func (t *TaskRunner) LogWithTime(now time.Time, msg string) {
+	msg = git.SanitizeGitOutput(msg)
 	t.sendToWs(now, msg)
 
 	t.pool.logger <- logRecord{
@@ -57,16 +60,32 @@ func (t *TaskRunner) LogfWithTime(now time.Time, format string, a ...any) {
 	t.LogWithTime(now, fmt.Sprintf(format, a...))
 }
 
-func (t *TaskRunner) LogCmd(cmd *exec.Cmd) {
-	stderr, _ := cmd.StderrPipe()
-	stdout, _ := cmd.StdoutPipe()
+func (t *TaskRunner) LogCmd(cmd *exec.Cmd) func() {
+	// io.PipeWriter is not *os.File, so os/exec owns and waits for output copying.
+	stderr, stderrWriter := io.Pipe()
+	stdout, stdoutWriter := io.Pipe()
+	cmd.Stderr = stderrWriter
+	cmd.Stdout = stdoutWriter
 
-	go t.logPipe(stderr)
-	go t.logPipe(stdout)
-}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		t.logPipe(stderr)
+	}()
+	go func() {
+		defer wg.Done()
+		t.logPipe(stdout)
+	}()
 
-func (t *TaskRunner) WaitLog() {
-	t.logWG.Wait()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = stderrWriter.Close()
+			_ = stdoutWriter.Close()
+			wg.Wait()
+		})
+	}
 }
 
 func (t *TaskRunner) SetCommit(hash, message string) {
@@ -156,17 +175,21 @@ func (t *TaskRunner) panicOnError(err error, msg string) {
 }
 
 func (t *TaskRunner) logPipe(reader io.Reader) {
-	t.logWG.Add(1)
-
 	linesCh := make(chan string, 100000)
+	if closer, ok := reader.(io.Closer); ok {
+		defer closer.Close()
+	}
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		defer t.logWG.Done()
+		defer wg.Done()
 
 		for line := range linesCh {
 			t.Log(line)
 		}
 	}()
+	defer wg.Wait()
 
 	scanner := bufio.NewScanner(reader)
 	const maxCapacity = 10 * 1024 * 1024 // 10 MB
