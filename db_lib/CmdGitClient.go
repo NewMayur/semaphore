@@ -1,12 +1,17 @@
 package db_lib
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
+	"github.com/semaphoreui/semaphore/pkg/common_errors"
+	"github.com/semaphoreui/semaphore/pkg/git"
 	"github.com/semaphoreui/semaphore/pkg/ssh"
+	"github.com/semaphoreui/semaphore/pkg/task_logger"
 
 	"github.com/semaphoreui/semaphore/db"
 	"github.com/semaphoreui/semaphore/util"
@@ -71,9 +76,34 @@ func (c CmdGitClient) run(r GitRepository, targetDir GitRepositoryDirType, args 
 
 	cmd := c.makeCmd(r, targetDir, keyInstallation, args...)
 
-	r.Logger.LogCmd(cmd)
+	var stderrBuf bytes.Buffer
+	if r.Logger != nil {
+		switch r.Logger.(type) {
+		case task_logger.NopLogger, *task_logger.NopLogger:
+			cmd.Stderr = &stderrBuf
+		}
+		finishLog := r.Logger.LogCmd(cmd)
+		defer finishLog()
+	} else {
+		cmd.Stderr = &stderrBuf
+	}
 
-	return cmd.Run()
+	err = cmd.Run()
+	if err != nil {
+		subCmd := ""
+		if len(args) > 0 {
+			subCmd = args[0]
+		}
+		stderrStr := strings.TrimSpace(stderrBuf.String())
+		if stderrStr != "" {
+			err = common_errors.NewUserErrorS(git.FormatGitErrorSummary(subCmd, stderrStr))
+		} else {
+			err = common_errors.NewUserErrorS(fmt.Sprintf("git %s failed: %v", subCmd, err))
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (c CmdGitClient) output(r GitRepository, targetDir GitRepositoryDirType, args ...string) (out string, err error) {
@@ -86,6 +116,19 @@ func (c CmdGitClient) output(r GitRepository, targetDir GitRepositoryDirType, ar
 
 	bytes, err := c.makeCmd(r, targetDir, keyInstallation, args...).Output()
 	if err != nil {
+		subCmd := ""
+		if len(args) > 0 {
+			subCmd = args[0]
+		}
+		var stderrStr string
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			stderrStr = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		if stderrStr != "" {
+			err = common_errors.NewUserErrorS(git.FormatGitErrorSummary(subCmd, stderrStr))
+		} else {
+			err = common_errors.NewUserErrorS(fmt.Sprintf("git %s failed: %v", subCmd, err))
+		}
 		return
 	}
 	out = strings.Trim(string(bytes), " \n")
@@ -93,11 +136,11 @@ func (c CmdGitClient) output(r GitRepository, targetDir GitRepositoryDirType, ar
 }
 
 func (c CmdGitClient) Clone(r GitRepository) error {
-	r.Logger.Log("Cloning Repository " + r.Repository.GitURL)
+	r.Logger.Log("Cloning Repository " + r.Repository.GetGitURL(true))
 
 	var dirName string
 	if r.TmpDirName == "" {
-		dirName = r.Repository.GetDirName(r.TemplateID)
+		dirName = r.Repository.GetCheckoutDirName(r.TemplateID)
 	} else {
 		dirName = r.TmpDirName
 	}
@@ -113,6 +156,8 @@ func (c CmdGitClient) Clone(r GitRepository) error {
 	return c.run(r, GitRepositoryTmpPath,
 		"clone",
 		"--recursive",
+		"--jobs",
+		strconv.Itoa(util.Config.GitSubmoduleJobs),
 		"--branch",
 		r.Repository.GitBranch,
 		"--end-of-options",
@@ -121,13 +166,19 @@ func (c CmdGitClient) Clone(r GitRepository) error {
 }
 
 func (c CmdGitClient) Pull(r GitRepository) error {
-	r.Logger.Log("Updating Repository " + r.Repository.GitURL)
+	r.Logger.Log("Updating Repository " + r.Repository.GetGitURL(true))
 
 	err := c.run(r, GitRepositoryFullPath, "pull", "origin", "--end-of-options", r.Repository.GitBranch)
 	if err != nil {
 		return err
 	}
-	return c.run(r, GitRepositoryFullPath, "submodule", "update", "--init", "--recursive")
+	return c.run(r, GitRepositoryFullPath,
+		"submodule",
+		"update",
+		"--init",
+		"--recursive",
+		"--jobs",
+		strconv.Itoa(util.Config.GitSubmoduleJobs))
 }
 
 func (c CmdGitClient) Checkout(r GitRepository, target string) error {

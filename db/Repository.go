@@ -1,7 +1,9 @@
 package db
 
 import (
+	"crypto/sha1"
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"strconv"
@@ -46,6 +48,39 @@ func (r Repository) GetDirName(templateID int) string {
 	return r.getDirNamePrefix() + "template_" + strconv.Itoa(templateID)
 }
 
+const branchDirNameMaxLen = 48
+const branchDirNameHashBytes = 16
+
+// branchDirName turns a branch name into a path-safe directory suffix. The
+// hash distinguishes branches whose readable names would otherwise collide.
+func branchDirName(branch string) string {
+	sum := sha1.Sum([]byte(branch))
+
+	readable := strings.Map(func(c rune) rune {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			c == '.' || c == '_' || c == '-' {
+			return c
+		}
+		return '-'
+	}, branch)
+
+	if len(readable) > branchDirNameMaxLen {
+		readable = readable[:branchDirNameMaxLen]
+	}
+
+	if readable == "" {
+		return fmt.Sprintf("%x", sum[:branchDirNameHashBytes])
+	}
+
+	return readable + "_" + fmt.Sprintf("%x", sum[:branchDirNameHashBytes])
+}
+
+// GetCheckoutDirName returns the checkout directory name for this template and
+// branch. Different branches must not share a working tree while tasks run.
+func (r Repository) GetCheckoutDirName(templateID int) string {
+	return r.GetDirName(templateID) + "_" + branchDirName(r.GitBranch)
+}
+
 // GetHomePath returns the per-template "home" directory with a "_home" suffix.
 // Currently this path is used for home-like directories such as ANSIBLE_HOME so
 // that parallel tasks from different templates get isolated home directories
@@ -62,54 +97,52 @@ func (r Repository) GetInternalPath(templateID int) string {
 }
 
 // GetFullPath returns the path where the repository source code lives.
-// The repository is cloned directly into the template directory
-// (e.g. repository_15_template_114) without any subdirectory.
+// The repository is cloned directly into its branch-specific checkout
+// directory (e.g. repository_15_template_114_main_1a2b3c4d).
 func (r Repository) GetFullPath(templateID int) string {
 	if r.GetType() == RepositoryLocal {
 		return r.GetGitURL(true)
 	}
-	return path.Join(util.Config.GetProjectTmpDir(r.ProjectID), r.GetDirName(templateID))
+	return path.Join(util.Config.GetProjectTmpDir(r.ProjectID), r.GetCheckoutDirName(templateID))
 }
 
 func (r Repository) GetGitURL(secure bool) string {
-	url := r.GitURL
+	rawURL := r.GitURL
 
 	if r.GetType() == RepositoryLocal {
-		return util.NormalizeLocalFilesystemPath(url)
+		return util.NormalizeLocalFilesystemPath(rawURL)
 	}
 
 	if secure {
-		return url
+		if r.GetType() == RepositoryHTTP {
+			if parsed, err := url.Parse(rawURL); err == nil && parsed.User != nil {
+				parsed.User = nil
+				return parsed.String()
+			}
+		}
+		return rawURL
 	}
 
 	if r.GetType() == RepositoryHTTP {
-		auth := ""
-		switch r.SSHKey.Type {
-		case AccessKeyLoginPassword:
-			if r.SSHKey.LoginPassword.Login == "" {
-				auth = r.SSHKey.LoginPassword.Password
-			} else {
-				auth = r.SSHKey.LoginPassword.Login + ":" + r.SSHKey.LoginPassword.Password
+		parsed, err := url.Parse(rawURL)
+		if err == nil {
+			if strings.EqualFold(parsed.Scheme, "https") {
+				switch r.SSHKey.Type {
+				case AccessKeyLoginPassword:
+					if r.SSHKey.LoginPassword.Login == "" {
+						if r.SSHKey.LoginPassword.Password != "" {
+							parsed.User = url.User(r.SSHKey.LoginPassword.Password)
+						}
+					} else {
+						parsed.User = url.UserPassword(r.SSHKey.LoginPassword.Login, r.SSHKey.LoginPassword.Password)
+					}
+				}
 			}
+			return parsed.String()
 		}
-		if auth != "" {
-			auth += "@"
-		}
-
-		re := regexp.MustCompile(`^(https?)://`)
-		m := re.FindStringSubmatch(url)
-		var protocol string
-
-		if m == nil {
-			panic(fmt.Errorf("invalid git url: %s", url))
-		}
-
-		protocol = m[1]
-
-		url = protocol + "://" + auth + r.GitURL[len(protocol)+3:]
 	}
 
-	return url
+	return rawURL
 }
 
 func (r Repository) GetType() RepositoryType {
