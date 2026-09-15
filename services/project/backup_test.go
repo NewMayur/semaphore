@@ -10,6 +10,7 @@ import (
 	proFactory "github.com/semaphoreui/semaphore/pro/db/factory"
 	"github.com/semaphoreui/semaphore/util"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testItem struct {
@@ -57,12 +58,14 @@ func TestBackupProject(t *testing.T) {
 	assert.NoError(t, err)
 
 	_, err = store.CreateTemplate(db.Template{
-		Name:           "Test",
-		Playbook:       "test.yml",
-		ProjectID:      proj.ID,
-		RepositoryID:   repo.ID,
-		InventoryID:    &inv.ID,
-		EnvironmentIDs: []int{env.ID},
+		Name:                  "Test",
+		Playbook:              "test.yml",
+		ProjectID:             proj.ID,
+		RepositoryID:          repo.ID,
+		InventoryID:           &inv.ID,
+		EnvironmentIDs:        []int{env.ID},
+		SuppressSuccessAlerts: true,
+		SuppressErrorAlerts:   true,
 	})
 	assert.NoError(t, err)
 
@@ -99,6 +102,8 @@ func TestBackupProject(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, restoredTemplates, 1)
 	assert.Len(t, restoredTemplates[0].EnvironmentIDs, 1)
+	assert.True(t, restoredTemplates[0].SuppressSuccessAlerts)
+	assert.True(t, restoredTemplates[0].SuppressErrorAlerts)
 
 	restoredEnvs, err := store.GetEnvironments(restoredProj.ID, db.RetrieveQueryParams{})
 	assert.NoError(t, err)
@@ -281,6 +286,7 @@ func TestBackup_RestoreScheduleWithoutTaskParams(t *testing.T) {
       "repository": "Test Repo",
       "roles": [],
       "suppress_success_alerts": false,
+      "suppress_error_alerts": false,
       "type": "",
       "vaults": [],
       "view": null,
@@ -357,4 +363,71 @@ func TestMakeUniqueNames(t *testing.T) {
 	})
 
 	assert.True(t, isUnique(items), "Not unique names")
+}
+
+func TestBackup_RestorePlainHTTPPasswordRejected(t *testing.T) {
+	previousConfig := util.Config
+	t.Cleanup(func() { util.Config = previousConfig })
+	util.Config = &util.ConfigType{
+		TmpPath: t.TempDir(),
+	}
+
+	store := sql.InitConfigCreateTestStore()
+
+	payload := `{
+  "environments": [],
+  "integration_aliases": [],
+  "integrations": [],
+  "inventories": [],
+  "keys": [
+    {
+      "name": "pwdkey",
+      "owner": "",
+      "type": "login_password",
+      "login_password": {
+        "login": "user",
+        "password": "secretpassword"
+      }
+    }
+  ],
+  "meta": {
+    "alert": false,
+    "max_parallel_tasks": 0,
+    "name": "Restored Insecure Project",
+    "type": ""
+  },
+  "repositories": [
+    {
+      "git_branch": "master",
+      "git_url": "http://example.com/test/test.git",
+      "name": "Insecure Repo",
+      "ssh_key": "pwdkey"
+    }
+  ],
+  "roles": [],
+  "runners": [],
+  "schedules": [],
+  "secret_storages": [],
+  "templates": [],
+  "views": []
+}`
+
+	restoredBackup := &BackupFormat{}
+	err := restoredBackup.Unmarshal(payload)
+	require.NoError(t, err)
+
+	user, err := store.CreateUser(db.UserWithPwd{
+		Pwd: "3412341234123",
+		User: db.User{
+			Username: "restoreuser",
+			Name:     "Test",
+			Email:    "restoreuser@example.com",
+			Admin:    true,
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = restoredBackup.Restore(user, store, proFactory.NewWorkflowStore(store))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password authentication is not supported over plain HTTP")
 }
