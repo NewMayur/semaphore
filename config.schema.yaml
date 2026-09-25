@@ -33,6 +33,7 @@ properties:
   # ==========================================================================
   # Authentication
   # ==========================================================================
+  auth: { $ref: "#/$defs/AuthConfig" }
   mfa: { $ref: "#/$defs/MultifactorAuthConfig" }
 
   # ==========================================================================
@@ -221,7 +222,13 @@ properties:
   forwarded_env_vars:
     type: array
     items: { type: string }
-    description: Host environment variables forwarded into task runs.
+    description: >-
+      Host environment variables copied into task runs and into the child git
+      processes that clone and update repositories. Proxy variables are not
+      forwarded implicitly: they reach a task only if they are named here or set
+      in env_vars. A bare-metal (systemd) installation behind a corporate proxy
+      therefore has to list the proxy variables explicitly, including the bypass
+      list for internal hosts: ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"].
 
   # ==========================================================================
   # Nested subsystems
@@ -357,6 +364,20 @@ $defs:
         minimum: 1
         maximum: 65535
         description: Port for the HTTP→HTTPS redirect listener. Mutually exclusive with http_redirect_addr.
+
+  AuthConfig:
+    type: object
+    description: Settings that apply to every login method.
+    properties:
+      max_session_life_hours:
+        type: integer
+        minimum: 0
+        default: 0
+        description: >-
+          Absolute lifetime of a login session in hours, counted from login.
+          Once exceeded the session is expired even if it was recently active.
+          0 means no absolute limit; sessions then expire only after 7 days
+          without activity.
 
   MultifactorAuthConfig:
     type: object
