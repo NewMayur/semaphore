@@ -244,7 +244,7 @@ definitions:
 
   ProjectBackup:
     type: object
-    example: {"meta":{"name":"homelab","alert":true,"alert_chat":"Test","max_parallel_tasks":0,"type":null},"templates":[{"inventory":"Build","repository":"Demo","environment":"Empty","name":"Build","playbook":"build.yml","app":"ansible","working_directory":".","arguments":"[]","allow_override_args_in_task":false,"description":"Build Job","vault_key":null,"type":"build","start_version":"1.0.0","build_template":null,"view":"Build","autorun":false,"survey_vars":[],"suppress_success_alerts":false,"cron":"* * * * *"}],"repositories":[{"name":"Demo","git_url":"https://github.com/semaphoreui/semaphore-demo.git","git_branch":"main","ssh_key":"None"}],"keys":[{"name":"None","type":"none"},{"name":"Vault Password","type":"login_password"}],"views":[{"title":"Build","position":0}],"inventories":[{"name":"Build","inventory":"","ssh_key":"None","become_key":"None","type":"static"},{"name":"Dev","inventory":"","ssh_key":"None","become_key":"None","type":"file"},{"name":"Prod","inventory":"","ssh_key":"None","become_key":"None","type":"file"}],"environments":[{"name":"Empty","password":null,"json":"{}","env":null}]}
+    example: {"meta":{"name":"homelab","alert":true,"alert_chat":"Test","max_parallel_tasks":0,"type":null},"templates":[{"inventory":"Build","repository":"Demo","environment":"Empty","name":"Build","playbook":"build.yml","app":"ansible","working_directory":".","arguments":"[]","allow_override_args_in_task":false,"description":"Build Job","vault_key":null,"type":"build","start_version":"1.0.0","build_template":null,"view":"Build","autorun":false,"survey_vars":[],"suppress_success_alerts":false,"suppress_error_alerts":false,"cron":"* * * * *"}],"repositories":[{"name":"Demo","git_url":"https://github.com/semaphoreui/semaphore-demo.git","git_branch":"main","ssh_key":"None"}],"keys":[{"name":"None","type":"none"},{"name":"Vault Password","type":"login_password"}],"views":[{"title":"Build","position":0}],"inventories":[{"name":"Build","inventory":"","ssh_key":"None","become_key":"None","type":"static"},{"name":"Dev","inventory":"","ssh_key":"None","become_key":"None","type":"file"},{"name":"Prod","inventory":"","ssh_key":"None","become_key":"None","type":"file"}],"environments":[{"name":"Empty","password":null,"json":"{}","env":null}]}
     properties:
       meta:
         type: object
@@ -293,6 +293,8 @@ definitions:
             allow_override_args_in_task:
               type: boolean
             suppress_success_alerts:
+              type: boolean
+            suppress_error_alerts:
               type: boolean
             cron:
               type: string
@@ -571,6 +573,54 @@ definitions:
         type: array
         items:
           $ref: '#/definitions/EnvironmentSecret'
+
+  HostConfig:
+    type: object
+    properties:
+      id:
+        type: integer
+      project_id:
+        type: integer
+        minimum: 1
+      type:
+        type: string
+        enum: [host, url]
+        description: host matches an ssh host name, url matches a git URL or prefix
+      host:
+        type: string
+        example: github.com
+        description: an ssh host name, or a git URL/prefix for the url type
+      ssh_key_id:
+        type: integer
+        description: >
+          the credential used to reach the host. A host mapping needs an SSH key;
+          a URL mapping also accepts a login/password, which authenticates over
+          HTTPS.
+        example: 1
+
+  HostConfigRequest:
+    type: object
+    required:
+      - project_id
+      - type
+      - host
+      - ssh_key_id
+    properties:
+      id:
+        type: integer
+        description: required on update, must equal the id in the path
+      project_id:
+        type: integer
+        minimum: 1
+      type:
+        type: string
+        enum: [host, url]
+      host:
+        type: string
+        example: github.com
+      ssh_key_id:
+        type: integer
+        example: 1
 
   InventoryRequest:
     type: object
@@ -968,6 +1018,8 @@ definitions:
         example: ''
       suppress_success_alerts:
         type: boolean
+      suppress_error_alerts:
+        type: boolean
       app:
         type: string
         example: ansible
@@ -1036,6 +1088,8 @@ definitions:
         type: boolean
         example: false
       suppress_success_alerts:
+        type: boolean
+      suppress_error_alerts:
         type: boolean
       app:
         type: string
@@ -1522,6 +1576,13 @@ parameters:
     type: integer
     required: true
     x-example: 1
+  host_config_id:
+    name: host_config_id
+    description: Host config ID
+    in: path
+    type: integer
+    required: true
+    x-example: 21
   user_id:
     name: user_id
     description: User ID
@@ -2876,6 +2937,78 @@ paths:
           description: repository removed
 
   # project inventory
+  /project/{project_id}/host_configs:
+    parameters:
+      - $ref: "#/parameters/project_id"
+    get:
+      tags:
+        - project
+      summary: Get the credential mappings of the project
+      responses:
+        200:
+          description: host configs
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/HostConfig"
+    post:
+      tags:
+        - project
+      summary: Add a credential mapping
+      parameters:
+        - name: Host config
+          in: body
+          required: true
+          schema:
+            $ref: "#/definitions/HostConfigRequest"
+      responses:
+        201:
+          description: host config created
+          schema:
+            $ref: "#/definitions/HostConfig"
+        400:
+          description: invalid mapping
+
+  /project/{project_id}/host_configs/{host_config_id}:
+    parameters:
+      - $ref: "#/parameters/project_id"
+      - $ref: "#/parameters/host_config_id"
+    get:
+      tags:
+        - project
+      summary: Get a credential mapping
+      responses:
+        200:
+          description: host config
+          schema:
+            $ref: "#/definitions/HostConfig"
+    put:
+      tags:
+        - project
+      summary: Update a credential mapping
+      parameters:
+        - name: Host config
+          in: body
+          required: true
+          schema:
+            allOf:
+              - $ref: "#/definitions/HostConfigRequest"
+              - type: object
+                required:
+                  - id
+      responses:
+        204:
+          description: host config updated
+        400:
+          description: invalid mapping
+    delete:
+      tags:
+        - project
+      summary: Delete a credential mapping
+      responses:
+        204:
+          description: host config deleted
+
   /project/{project_id}/inventory:
     parameters:
       - $ref: "#/parameters/project_id"
